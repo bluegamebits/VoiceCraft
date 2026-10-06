@@ -7,9 +7,12 @@
 //
 // Events (CustomEvent, data in e.detail): state {state, reason}, title {text}, description {text},
 // bindingkey {key, linkedName}, linked {name}, bound {name}, speaking {value}, level {rms}, peers {list}, muted {value},
-// deafened {value}, serverMuted {value}, serverDeafened {value}, global {talk, listen}, error {error}.
+// deafened {value}, serverMuted {value}, serverDeafened {value}, global {talk, listen},
+// microphone {deviceId, label, fallback}, speaker {deviceId, fallback}, error {error}.
 // state is one of: idle, starting, connecting, connected, reconnecting, stopped.
 // global is only sent by servers with the global channel: it confirms what the server applied.
+// microphone/speaker report the device in use; fallback means the chosen one wasn't available, so the
+// system default is used.
 
 const FRAME = 960; // 20 ms at 48 kHz
 const PCM_RATE = 16000;
@@ -28,11 +31,15 @@ export class VoiceCraftWeb extends EventTarget {
    * @param {string} [options.workletUrl] URL of voicecraft-worklet.js (default: next to this module).
    * @param {'opus'|'pcm16'} [options.codec] Force a codec (default: opus when the browser supports it).
    * @param {MediaTrackConstraints} [options.microphone] Extra getUserMedia audio constraints.
+   * @param {string} [options.microphoneId] Microphone to use (a deviceId from listDevices()); default: the system's.
+   * @param {string} [options.speakerId] Output device to play to, where canChooseSpeaker; default: the system's.
    * @param {(ctx: AudioContext) => MediaStream} [options.stream] Use this stream instead of the microphone (testing).
    */
   constructor(options) {
     super();
     this.options = options;
+    this.microphoneId = options.microphoneId || '';
+    this.speakerId = options.speakerId || '';
     this.state = 'idle';
     this.bindingKey = null;
     this.boundName = null;
@@ -61,6 +68,28 @@ export class VoiceCraftWeb extends EventTarget {
     try { localStorage.removeItem(ID_KEY); } catch { /* storage unavailable */ }
   }
 
+  /** True if this browser can play to a chosen output device (AudioContext.setSinkId: Chrome and Edge). */
+  static get canChooseSpeaker() {
+    return typeof AudioContext !== 'undefined' && typeof AudioContext.prototype.setSinkId === 'function';
+  }
+
+  /**
+   * Microphones and output devices, as {deviceId, label}. Labels need microphone permission, so call this
+   * after start(). Outputs are only listed where canChooseSpeaker. '' (not listed) is the system default.
+   */
+  static async listDevices() {
+    const devices = navigator.mediaDevices && navigator.mediaDevices.enumerateDevices
+      ? await navigator.mediaDevices.enumerateDevices() : [];
+    // Chrome adds "default" and "communications" entries that repeat a real device.
+    const real = (kind) => devices
+      .filter((d) => d.kind === kind && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications')
+      .map((d) => ({ deviceId: d.deviceId, label: d.label || '' }));
+    return {
+      microphones: real('audioinput'),
+      speakers: VoiceCraftWeb.canChooseSpeaker ? real('audiooutput') : [],
+    };
+  }
+
   /** Opus via WebCodecs if the browser can encode and decode it, else 16 kHz PCM. */
   static async detectCodec() {
     try {
@@ -87,28 +116,21 @@ export class VoiceCraftWeb extends EventTarget {
         this._ctx = new AC({ latencyHint: 'interactive' });
       }
       const ctxResume = this._ctx.resume();
-      this._stream = this.options.stream ? this.options.stream(this._ctx) : await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-          ...(this.options.microphone || {}),
-        },
-      });
+      this._stream = this.options.stream ? this.options.stream(this._ctx) : await this._openMicrophone(this.microphoneId);
       await ctxResume;
+      if (this.speakerId) await this._applySpeaker();
       const workletUrl = this.options.workletUrl || new URL('./voicecraft-worklet.js', import.meta.url).href;
       await this._ctx.audioWorklet.addModule(workletUrl);
 
       this.codec = this.options.codec || (await VoiceCraftWeb.detectCodec());
       this._setupCodec();
 
-      const source = this._ctx.createMediaStreamSource(this._stream);
+      this._source = this._ctx.createMediaStreamSource(this._stream);
       this._capture = new AudioWorkletNode(this._ctx, 'vc-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
       this._capture.port.onmessage = (e) => this._onMicFrame(e.data.frame, e.data.rms);
       this._sink = this._ctx.createGain();
       this._sink.gain.value = 0; // keeps the capture node running without echoing the mic
-      source.connect(this._capture).connect(this._sink).connect(this._ctx.destination);
+      this._source.connect(this._capture).connect(this._sink).connect(this._ctx.destination);
 
       this._playback = new AudioWorkletNode(this._ctx, 'vc-playback', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
       this._playback.connect(this._ctx.destination);
@@ -139,6 +161,7 @@ export class VoiceCraftWeb extends EventTarget {
     }
     if (this._stream) this._stream.getTracks().forEach((t) => t.stop());
     this._stream = null;
+    this._source = null;
     if (this._encoder && this._encoder.state !== 'closed') try { this._encoder.close(); } catch { /* ignore */ }
     if (this._decoder && this._decoder.state !== 'closed') try { this._decoder.close(); } catch { /* ignore */ }
     this._encoder = this._decoder = null;
@@ -169,6 +192,74 @@ export class VoiceCraftWeb extends EventTarget {
     if (talk !== undefined) this._globalTalk = !!talk;
     if (listen !== undefined) this._globalListen = !!listen;
     this._send({ t: 'global', talk: this._globalTalk, listen: this._globalListen });
+  }
+
+  /** Switches the microphone ('' = system default), live if started. A deviceId from listDevices(). */
+  async setMicrophone(deviceId) {
+    this.microphoneId = deviceId || '';
+    if (this._stopped || !this._ctx || !this._capture || this.options.stream) return;
+    await this._swapMicrophone(this.microphoneId);
+  }
+
+  /** Switches the output device ('' = system default), where canChooseSpeaker. A deviceId from listDevices(). */
+  async setSpeaker(deviceId) {
+    this.speakerId = deviceId || '';
+    await this._applySpeaker();
+  }
+
+  // ── Devices ────────────────────────────────────────────
+
+  async _openMicrophone(deviceId) {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        // ideal, not exact: if the device is gone, the browser picks the default instead of failing.
+        ...(deviceId ? { deviceId: { ideal: deviceId } } : {}),
+        ...(this.options.microphone || {}),
+      },
+    });
+    const track = stream.getAudioTracks()[0];
+    if (track) {
+      // Unplugged (a headset turned off, say): carry on with the system default.
+      track.addEventListener('ended', () => {
+        if (this._stream === stream && !this._stopped)
+          this._swapMicrophone('').catch((error) => this._emit('error', { error }));
+      });
+      const active = (track.getSettings && track.getSettings().deviceId) || '';
+      this._emit('microphone', { deviceId: active, label: track.label, fallback: !!this.microphoneId && active !== this.microphoneId });
+    }
+    return stream;
+  }
+
+  async _swapMicrophone(deviceId) {
+    const stream = await this._openMicrophone(deviceId);
+    if (this._stopped || !this._ctx || !this._capture) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    const oldStream = this._stream;
+    const oldSource = this._source;
+    this._stream = stream;
+    this._source = this._ctx.createMediaStreamSource(stream);
+    this._source.connect(this._capture);
+    if (oldSource) oldSource.disconnect();
+    if (oldStream) oldStream.getTracks().forEach((t) => t.stop());
+  }
+
+  async _applySpeaker() {
+    if (!this._ctx || typeof this._ctx.setSinkId !== 'function') return;
+    let fallback = false;
+    try {
+      await this._ctx.setSinkId(this.speakerId);
+    } catch {
+      // Gone (unplugged) or not allowed: play to the system default.
+      fallback = !!this.speakerId;
+      await this._ctx.setSinkId('').catch(() => {});
+    }
+    this._emit('speaker', { deviceId: this.speakerId, fallback });
   }
 
   // ── Connection ─────────────────────────────────────────

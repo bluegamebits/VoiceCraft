@@ -72,10 +72,22 @@ button.onclick = () => vc.start(); // from a click: browsers need a gesture for 
 ```
 
 Events: `state`, `bindingkey`, `linked`, `bound`, `description`, `title`, `speaking`, `level`,
-`peers`, `muted`, `deafened`, `serverMuted`, `serverDeafened`, `global`, `error`. Methods: `start()`,
-`stop()`, `setMuted()`, `setDeafened()`, `setVolume(0..2)`, `setSensitivity(0..1)`,
-`setGlobal({talk, listen})`, and the static `VoiceCraftWeb.forgetDevice()`. `vc.stats` has frame
+`peers`, `muted`, `deafened`, `serverMuted`, `serverDeafened`, `global`, `microphone`, `speaker`,
+`error`. Methods: `start()`, `stop()`, `setMuted()`, `setDeafened()`, `setVolume(0..2)`,
+`setSensitivity(0..1)`, `setGlobal({talk, listen})`, `setMicrophone(deviceId)`, `setSpeaker(deviceId)`,
+and the static `VoiceCraftWeb.forgetDevice()` and `VoiceCraftWeb.listDevices()`. `vc.stats` has frame
 counters for diagnostics.
+
+### Choosing the microphone and speaker
+
+`VoiceCraftWeb.listDevices()` returns `{microphones, speakers}` as `{deviceId, label}` (labels need
+microphone permission, so call it after `start()`). Pass `microphoneId`/`speakerId` in the options, or
+call `setMicrophone()`/`setSpeaker()` at any time; `''` is the system default. The microphone switches
+live, and if it's unplugged the library carries on with the default. The speaker uses
+`AudioContext.setSinkId`, so it only works where `VoiceCraftWeb.canChooseSpeaker` is true (Chrome and
+Edge); elsewhere the browser plays to the system's output. `microphone {deviceId, label, fallback}` and
+`speaker {deviceId, fallback}` report the device in use; `fallback` means the chosen one wasn't
+available.
 
 ### Remembered devices
 
