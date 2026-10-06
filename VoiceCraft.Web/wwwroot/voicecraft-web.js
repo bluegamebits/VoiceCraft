@@ -6,7 +6,7 @@
 //   button.onclick = () => vc.start(); // must run from a user gesture (microphone + audio)
 //
 // Events (CustomEvent, data in e.detail): state {state, reason}, title {text}, description {text},
-// bindingkey {key, linkedName}, linked {name}, bound {name}, speaking {value}, level {rms}, peers {list}, muted {value},
+// bindingkey {key, linkedName}, linked {name}, bound {name}, speaking {value}, level {rms, peak}, peers {list}, muted {value},
 // deafened {value}, serverMuted {value}, serverDeafened {value}, global {talk, listen},
 // microphone {deviceId, label, fallback}, speaker {deviceId, fallback}, error {error}.
 // state is one of: idle, starting, connecting, connected, reconnecting, stopped.
@@ -15,6 +15,7 @@
 // system default is used.
 
 const FRAME = 960; // 20 ms at 48 kHz
+const DEFAULT_SENSITIVITY = 0.04; // the bridge's default, same as the native app
 const PCM_RATE = 16000;
 const PCM_FRAME = 320;
 const ID_KEY = 'voicecraft-web-ids';
@@ -33,6 +34,11 @@ export class VoiceCraftWeb extends EventTarget {
    * @param {MediaTrackConstraints} [options.microphone] Extra getUserMedia audio constraints.
    * @param {string} [options.microphoneId] Microphone to use (a deviceId from listDevices()); default: the system's.
    * @param {string} [options.speakerId] Output device to play to, where canChooseSpeaker; default: the system's.
+   * @param {number} [options.volume] Output volume, 0..2 (1 = normal).
+   * @param {number} [options.inputVolume] Microphone volume, 0..2 (1 = as recorded).
+   * @param {number} [options.sensitivity] Voice activation threshold, 0..1 (a frame's peak level).
+   * @param {{echoCancellation?: boolean, noiseSuppression?: boolean, autoGainControl?: boolean}} [options.processing]
+   *   The browser's microphone processing (all on by default).
    * @param {(ctx: AudioContext) => MediaStream} [options.stream] Use this stream instead of the microphone (testing).
    */
   constructor(options) {
@@ -40,14 +46,16 @@ export class VoiceCraftWeb extends EventTarget {
     this.options = options;
     this.microphoneId = options.microphoneId || '';
     this.speakerId = options.speakerId || '';
+    this.processing = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(options.processing || {}) };
     this.state = 'idle';
     this.bindingKey = null;
     this.boundName = null;
     this.peers = [];
     this.muted = false;
     this.deafened = false;
-    this.volume = 1;
-    this.sensitivity = 0.04;
+    this.volume = options.volume === undefined ? 1 : clamp(options.volume, 0, 2);
+    this.inputVolume = options.inputVolume === undefined ? 1 : clamp(options.inputVolume, 0, 2);
+    this.sensitivity = options.sensitivity === undefined ? DEFAULT_SENSITIVITY : clamp(options.sensitivity, 0, 1);
     /** Global channel as confirmed by the server ({talk, listen}), or null if it hasn't confirmed (yet). */
     this.global = null;
     this._globalTalk = false;
@@ -125,12 +133,16 @@ export class VoiceCraftWeb extends EventTarget {
       this.codec = this.options.codec || (await VoiceCraftWeb.detectCodec());
       this._setupCodec();
 
+      // microphone → input volume → capture (→ silent sink). The volume is applied here, before the level
+      // meter and before the bridge's voice activation, so both see what the others will hear.
       this._source = this._ctx.createMediaStreamSource(this._stream);
+      this._gain = this._ctx.createGain();
+      this._gain.gain.value = this.inputVolume;
       this._capture = new AudioWorkletNode(this._ctx, 'vc-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-      this._capture.port.onmessage = (e) => this._onMicFrame(e.data.frame, e.data.rms);
+      this._capture.port.onmessage = (e) => this._onMicFrame(e.data.frame, e.data.rms, e.data.peak);
       this._sink = this._ctx.createGain();
       this._sink.gain.value = 0; // keeps the capture node running without echoing the mic
-      this._source.connect(this._capture).connect(this._sink).connect(this._ctx.destination);
+      this._source.connect(this._gain).connect(this._capture).connect(this._sink).connect(this._ctx.destination);
 
       this._playback = new AudioWorkletNode(this._ctx, 'vc-playback', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
       this._playback.connect(this._ctx.destination);
@@ -162,6 +174,7 @@ export class VoiceCraftWeb extends EventTarget {
     if (this._stream) this._stream.getTracks().forEach((t) => t.stop());
     this._stream = null;
     this._source = null;
+    this._gain = null;
     if (this._encoder && this._encoder.state !== 'closed') try { this._encoder.close(); } catch { /* ignore */ }
     if (this._decoder && this._decoder.state !== 'closed') try { this._decoder.close(); } catch { /* ignore */ }
     this._encoder = this._decoder = null;
@@ -181,8 +194,25 @@ export class VoiceCraftWeb extends EventTarget {
   setDeafened(value) { this.deafened = !!value; this._send({ t: 'deafen', value: this.deafened }); }
   /** Output volume, 0..2 (1 = normal). */
   setVolume(value) { this.volume = clamp(value, 0, 2); this._send({ t: 'volume', value: this.volume }); }
-  /** Voice activation threshold, 0..1 (lower = more sensitive). */
+  /**
+   * Voice activation threshold, 0..1 (lower = more sensitive): the bridge sends your voice while a 20 ms
+   * frame's peak (the 'level' event's peak, after the input volume) reaches it.
+   */
   setSensitivity(value) { this.sensitivity = clamp(value, 0, 1); this._send({ t: 'sensitivity', value: this.sensitivity }); }
+  /** Microphone volume, 0..2 (1 = as recorded), applied in the browser. */
+  setInputVolume(value) {
+    this.inputVolume = clamp(value, 0, 2);
+    if (this._gain && this._ctx) this._gain.gain.setTargetAtTime(this.inputVolume, this._ctx.currentTime, 0.02);
+  }
+  /**
+   * The browser's microphone processing; reopens the microphone if started.
+   * @param {{echoCancellation?: boolean, noiseSuppression?: boolean, autoGainControl?: boolean}} processing
+   */
+  async setProcessing(processing) {
+    this.processing = { ...this.processing, ...processing };
+    if (this._stopped || !this._ctx || !this._capture || this.options.stream) return;
+    await this._swapMicrophone(this.microphoneId);
+  }
   /**
    * Global channel: talk to everyone instead of players nearby, and/or stop hearing it. Can be called before
    * start(); kept across reconnects. The server applies it once the player is linked, then sends 'global'.
@@ -212,9 +242,9 @@ export class VoiceCraftWeb extends EventTarget {
   async _openMicrophone(deviceId) {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        echoCancellation: this.processing.echoCancellation,
+        noiseSuppression: this.processing.noiseSuppression,
+        autoGainControl: this.processing.autoGainControl,
         channelCount: 1,
         // ideal, not exact: if the device is gone, the browser picks the default instead of failing.
         ...(deviceId ? { deviceId: { ideal: deviceId } } : {}),
@@ -244,7 +274,7 @@ export class VoiceCraftWeb extends EventTarget {
     const oldSource = this._source;
     this._stream = stream;
     this._source = this._ctx.createMediaStreamSource(stream);
-    this._source.connect(this._capture);
+    this._source.connect(this._gain);
     if (oldSource) oldSource.disconnect();
     if (oldStream) oldStream.getTracks().forEach((t) => t.stop());
   }
@@ -280,7 +310,7 @@ export class VoiceCraftWeb extends EventTarget {
       if (this.muted) this._send({ t: 'mute', value: true });
       if (this.deafened) this._send({ t: 'deafen', value: true });
       if (this.volume !== 1) this._send({ t: 'volume', value: this.volume });
-      if (this.sensitivity !== 0.04) this._send({ t: 'sensitivity', value: this.sensitivity });
+      if (this.sensitivity !== DEFAULT_SENSITIVITY) this._send({ t: 'sensitivity', value: this.sensitivity });
       if (this._globalTalk || !this._globalListen) this._send({ t: 'global', talk: this._globalTalk, listen: this._globalListen });
     };
     ws.onmessage = (e) => {
@@ -395,8 +425,8 @@ export class VoiceCraftWeb extends EventTarget {
     this._decoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
   }
 
-  _onMicFrame(frame, rms) {
-    this._emit('level', { rms });
+  _onMicFrame(frame, rms, peak) {
+    this._emit('level', { rms, peak });
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
     if (this.codec === 'opus') {
       if (!this._encoder || this._encoder.state !== 'configured') return;

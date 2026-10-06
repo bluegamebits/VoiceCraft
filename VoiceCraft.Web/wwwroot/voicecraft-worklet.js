@@ -5,7 +5,7 @@
 const WIRE_RATE = 48000;
 const FRAME = 960;
 
-/** Microphone → 960-sample mono frames at 48 kHz, posted to the main thread with their RMS level. */
+/** Microphone → 960-sample mono frames at 48 kHz, posted to the main thread with their RMS and peak levels. */
 class VcCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -42,9 +42,13 @@ class VcCaptureProcessor extends AudioWorkletProcessor {
     this.frame[this.pos++] = sample;
     if (this.pos === FRAME) {
       let sum = 0;
-      for (let i = 0; i < FRAME; i++) sum += this.frame[i] * this.frame[i];
+      let peak = 0;
+      for (let i = 0; i < FRAME; i++) {
+        sum += this.frame[i] * this.frame[i];
+        peak = Math.max(peak, Math.abs(this.frame[i]));
+      }
       const out = this.frame;
-      this.port.postMessage({ frame: out, rms: Math.sqrt(sum / FRAME) }, [out.buffer]);
+      this.port.postMessage({ frame: out, rms: Math.sqrt(sum / FRAME), peak }, [out.buffer]);
       this.frame = new Float32Array(FRAME);
       this.pos = 0;
     }

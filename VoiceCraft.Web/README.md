@@ -74,9 +74,20 @@ button.onclick = () => vc.start(); // from a click: browsers need a gesture for 
 Events: `state`, `bindingkey`, `linked`, `bound`, `description`, `title`, `speaking`, `level`,
 `peers`, `muted`, `deafened`, `serverMuted`, `serverDeafened`, `global`, `microphone`, `speaker`,
 `error`. Methods: `start()`, `stop()`, `setMuted()`, `setDeafened()`, `setVolume(0..2)`,
-`setSensitivity(0..1)`, `setGlobal({talk, listen})`, `setMicrophone(deviceId)`, `setSpeaker(deviceId)`,
-and the static `VoiceCraftWeb.forgetDevice()` and `VoiceCraftWeb.listDevices()`. `vc.stats` has frame
-counters for diagnostics.
+`setInputVolume(0..2)`, `setSensitivity(0..1)`, `setProcessing({...})`, `setGlobal({talk, listen})`,
+`setMicrophone(deviceId)`, `setSpeaker(deviceId)`, and the static `VoiceCraftWeb.forgetDevice()` and
+`VoiceCraftWeb.listDevices()`. `vc.stats` has frame counters for diagnostics.
+
+### Microphone level and processing
+
+- **Input volume** (`inputVolume` option, `setInputVolume(0..2)`) is a gain in the browser, before the
+  level meter and before the bridge's voice activation, so both see what the others will hear.
+- **Voice activation** (`sensitivity` option, `setSensitivity(0..1)`, default 0.04): the bridge sends
+  your voice while a 20 ms frame's peak reaches it. `level {rms, peak}` reports both for each frame, so a
+  page can draw the threshold on its meter (on a −60…0 dB scale, for example).
+- **Browser processing** (`processing` option, `setProcessing({echoCancellation, noiseSuppression,
+  autoGainControl})`, all on by default): changing it reopens the microphone.
+- **Output volume** (`volume` option, `setVolume(0..2)`) is applied by the bridge.
 
 ### Choosing the microphone and speaker
 
