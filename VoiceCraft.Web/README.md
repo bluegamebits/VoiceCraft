@@ -16,7 +16,8 @@ For each browser, the bridge runs a headless `LiteNetVoiceCraftClient`, the same
 native apps use. To the server and the Minecraft add-on it is an ordinary client: it gets an entity,
 a binding key (`/vcbind <key>`), and all the usual effects. The client's own `AudioEffectSystem`
 does the mixing on the bridge, so the browser only records the microphone and plays one stream.
-No changes to the server, the add-ons or the protocol.
+No changes to the server, the add-ons or the protocol (only the optional
+[global channel](#global-channel-server-option) needs a server built from this fork).
 
 - **Audio:** Opus through WebCodecs where the browser supports it (32 kbps up, 64 kbps stereo
   down), with a fallback to 16 kHz 16-bit PCM (about 256 kbps each way, mono). The browser applies
@@ -71,9 +72,10 @@ button.onclick = () => vc.start(); // from a click: browsers need a gesture for 
 ```
 
 Events: `state`, `bindingkey`, `linked`, `bound`, `description`, `title`, `speaking`, `level`,
-`peers`, `muted`, `deafened`, `serverMuted`, `serverDeafened`, `error`. Methods: `start()`, `stop()`,
-`setMuted()`, `setDeafened()`, `setVolume(0..2)`, `setSensitivity(0..1)`, and the static
-`VoiceCraftWeb.forgetDevice()`. `vc.stats` has frame counters for diagnostics.
+`peers`, `muted`, `deafened`, `serverMuted`, `serverDeafened`, `global`, `error`. Methods: `start()`,
+`stop()`, `setMuted()`, `setDeafened()`, `setVolume(0..2)`, `setSensitivity(0..1)`,
+`setGlobal({talk, listen})`, and the static `VoiceCraftWeb.forgetDevice()`. `vc.stats` has frame
+counters for diagnostics.
 
 ### Remembered devices
 
@@ -85,19 +87,40 @@ Your binding key is <key>`; the library reports that as `linked {name}` and
 `bindingkey {key, linkedName}`. `forgetDevice()` drops the ids, so the next connection is a new device. For testing without a microphone, the example page takes `?tone=1`
 (sends a 440 Hz tone) and `?codec=pcm16` (forces the fallback).
 
+## Global channel (server option)
+
+A server built from this fork can run a global voice channel next to proximity chat. Set
+`"GlobalChannelBitmask": 16` in `config/ServerProperties.json`: a talk/listen bit that no audio effect
+uses (the default effects use 1, 2, 4 and 8). The server's `GlobalChannelSystem` then manages every
+client's talk and listen bitmasks:
+
+- **Talking on the channel** (`setGlobal({talk: true})`): everyone listening to it hears you at full
+  volume, at any distance and in any world, without effects. You still hear players near you.
+- **Listening** (on by default; `setGlobal({listen: false})` turns it off): hear whoever talks on it.
+  Someone who turned it off doesn't hear a global talker even next to them.
+- **Only linked players** (an entity with a world id, which the Minecraft add-on sets while the player
+  is in the game) get the channel, so a device that hasn't bound can't listen in.
+
+Clients ask for it through two entity properties, `GlobalChannel:Talk` and `GlobalChannel:Listen`, which
+the server lets clients set on themselves even with server positioning. The native apps don't set them,
+so their players talk with proximity and hear the channel. The server echoes the accepted values back,
+and the library reports them as `global {talk, listen}`, so a page can offer the choice only when the
+server supports it. With the option off (the default), or on an unmodified server, nothing changes.
+
 ## WebSocket protocol
 
 Text frames are JSON `{"t": "<type>", …}`; binary frames are one 20 ms audio frame.
 
 - **Browser → bridge:** `hello {codec: "opus"|"pcm16", user, server, locale}` (first message;
   `user`/`server` are GUIDs the page keeps in `localStorage`), `mute {value}`, `deafen {value}`,
-  `volume {value}`, `inputVolume {value}`, `sensitivity {value}`. Audio: an Opus packet (48 kHz mono)
-  or 320 little-endian int16 samples (16 kHz).
+  `volume {value}`, `inputVolume {value}`, `sensitivity {value}`, `global {talk?, listen?}`. Audio: an
+  Opus packet (48 kHz mono) or 320 little-endian int16 samples (16 kHz).
 - **Bridge → browser:** `state {state: connecting|connected|disconnected, reason?}`,
   `description {text}` (contains the binding key, then "Bound to player …"), `title {text}`,
   `speaking`/`muted`/`deafened`/`serverMuted`/`serverDeafened {value}`,
-  `peers {list: [{id, name, speaking}]}` (visible entities, sent when it changes). Audio: an Opus
-  packet (48 kHz stereo) or 320 int16 samples (16 kHz mono).
+  `peers {list: [{id, name, speaking, global}]}` (visible entities, sent when it changes),
+  `global {talk, listen}` (what the server applied; see [Global channel](#global-channel-server-option)).
+  Audio: an Opus packet (48 kHz stereo) or 320 int16 samples (16 kHz mono).
 
 ## Limitations
 

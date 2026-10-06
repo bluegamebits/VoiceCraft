@@ -7,6 +7,7 @@ using VoiceCraft.Network.Packets.VcPackets;
 using VoiceCraft.Network.Packets.VcPackets.Request;
 using VoiceCraft.Network.Packets.VcPackets.Response;
 using VoiceCraft.Network.Servers;
+using VoiceCraft.Network.World;
 
 namespace VoiceCraft.Tests.Network.Servers;
 
@@ -95,6 +96,36 @@ public class VoiceCraftServerTests
         Assert.True(server.Accepted);
         Assert.Same(marker, server.AcceptedData);
         Assert.Null(server.LastRejectedReason);
+    }
+
+    [Fact]
+    public void SetPropertyRequest_FromServerPositionedClient_OnlySetsClientPropertyKeys()
+    {
+        using var world = new VoiceCraftWorld();
+        var server = new TestVoiceCraftServer(world);
+        server.ClientPropertyKeys.Add("Allowed");
+        var peer = new ConnectedNetPeer(PositioningType.Server);
+        var entity = new VoiceCraftNetworkEntity(peer, 1);
+        peer.Tag = entity;
+
+        server.Dispatch(CreatePropertyPacket("Allowed", true), peer);
+        server.Dispatch(CreatePropertyPacket("ProximityEffect:MaxRange", 100000f), peer);
+
+        Assert.True(entity.TryGetProperty<bool>("Allowed", out var allowed) && allowed);
+        Assert.False(entity.TryGetProperty<float>("ProximityEffect:MaxRange", out _));
+    }
+
+    private static VcSetPropertyRequestPacket CreatePropertyPacket(string key, object value)
+    {
+        var packet = new VcSetPropertyRequestPacket();
+        packet.Set(key, value);
+        return packet;
+    }
+
+    private sealed class ConnectedNetPeer(PositioningType positioningType)
+        : VoiceCraftNetPeer(null, Guid.NewGuid(), Guid.NewGuid(), "en-US", positioningType)
+    {
+        public override VcConnectionState ConnectionState => VcConnectionState.Connected;
     }
 
     private static VcLoginRequestPacket CreateValidLoginPacket(PositioningType positioningType)

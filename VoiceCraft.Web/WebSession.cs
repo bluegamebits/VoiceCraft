@@ -12,6 +12,8 @@ using VoiceCraft.Core.Audio;
 using VoiceCraft.Core.World;
 using VoiceCraft.Network;
 using VoiceCraft.Network.Clients;
+using VoiceCraft.Network.Packets.VcPackets.Request;
+using VoiceCraft.Network.Systems;
 using VoiceCraft.Network.World;
 using VoiceCraft.Web.Audio;
 
@@ -27,9 +29,10 @@ namespace VoiceCraft.Web;
 ///   text frames are JSON control messages, {"t": "&lt;type&gt;", ...};
 ///   binary frames are one 20 ms audio frame in the codec chosen in "hello".
 /// Browser → bridge: hello {codec, user, server, locale}, mute {value}, deafen {value},
-///   volume {value 0..2}, inputVolume {value 0..2}, sensitivity {value 0..1}.
+///   volume {value 0..2}, inputVolume {value 0..2}, sensitivity {value 0..1}, global {talk?, listen?}.
 /// Bridge → browser: state {state, reason?}, title {text}, description {text}, speaking {value},
-///   muted/deafened/serverMuted/serverDeafened {value}, peers {list: [{id, name, speaking}]}.
+///   muted/deafened/serverMuted/serverDeafened {value}, peers {list: [{id, name, speaking, global}]},
+///   global {talk, listen} (what the server applied; only servers with the global channel send it).
 /// </summary>
 public sealed class WebSession : IDisposable
 {
@@ -59,6 +62,9 @@ public sealed class WebSession : IDisposable
     private int _silentFrames = SilentFramesBeforePause;
     private int _tick;
     private string _lastPeers = string.Empty;
+    // The page's global channel choice, sent to the server again on every connection.
+    private volatile bool _talkGlobal;
+    private volatile bool _listenGlobal = true;
     private int _closing;
     private WebSocketCloseStatus _closeStatus = WebSocketCloseStatus.NormalClosure;
     private string _closeDescription = "bye";
@@ -197,6 +203,11 @@ public sealed class WebSession : IDisposable
                 case "sensitivity" when client != null && TryGetFloat(root, out var sensitivity):
                     client.MicrophoneSensitivity = sensitivity;
                     break;
+                case "global":
+                    if (TryGetBool(root, "talk", out var talk)) _talkGlobal = talk;
+                    if (TryGetBool(root, "listen", out var listen)) _listenGlobal = listen;
+                    if (client != null) SendGlobalChoice(client);
+                    break;
             }
         }
     }
@@ -243,7 +254,11 @@ public sealed class WebSession : IDisposable
             OutputVolume = 1f,
             MicrophoneSensitivity = DefaultSensitivity
         };
-        client.OnConnected += () => SendState("connected");
+        client.OnConnected += () =>
+        {
+            SendState("connected");
+            SendGlobalChoice(client);
+        };
         client.OnDisconnected += reason =>
         {
             SendState("disconnected", reason);
@@ -256,6 +271,11 @@ public sealed class WebSession : IDisposable
         client.OnServerDeafenUpdated += value => SendBool("serverDeafened", value);
         client.OnMuteUpdated += (value, _) => SendBool("muted", value);
         client.OnDeafenUpdated += (value, _) => SendBool("deafened", value);
+        // The server echoes the global channel properties it accepted onto our own entity.
+        client.OnPropertyUpdated += (key, _, _) =>
+        {
+            if (key is GlobalChannelSystem.TalkProperty or GlobalChannelSystem.ListenProperty) SendGlobal(client);
+        };
 
         _codec = codec;
         _client = client;
@@ -295,6 +315,31 @@ public sealed class WebSession : IDisposable
         catch
         {
             // Best effort.
+        }
+    }
+
+    /// <summary>
+    /// Asks the server to apply the page's global channel choice. Servers without the global channel
+    /// ignore these properties (and then never confirm them, so the page doesn't offer the choice).
+    /// </summary>
+    private void SendGlobalChoice(VoiceCraftClient client)
+    {
+        if (client.ConnectionState != VcConnectionState.Connected) return;
+        SendProperty(client, GlobalChannelSystem.TalkProperty, _talkGlobal);
+        SendProperty(client, GlobalChannelSystem.ListenProperty, _listenGlobal);
+    }
+
+    private static void SendProperty(VoiceCraftClient client, string key, bool value)
+    {
+        var packet = PacketPool<VcSetPropertyRequestPacket>.GetPacket(() => new VcSetPropertyRequestPacket());
+        try
+        {
+            packet.Set(key, value);
+            client.SendPacket(packet);
+        }
+        finally
+        {
+            packet.Return();
         }
     }
 
@@ -349,6 +394,7 @@ public sealed class WebSession : IDisposable
                 writer.WriteNumber("id", peer.Id);
                 writer.WriteString("name", peer.Name);
                 writer.WriteBoolean("speaking", peer.Speaking);
+                writer.WriteBoolean("global", GetBool(peer, GlobalChannelSystem.TalkProperty, false));
                 writer.WriteEndObject();
             }
 
@@ -421,6 +467,14 @@ public sealed class WebSession : IDisposable
             writer.WriteBoolean("value", value);
         }));
 
+    private void SendGlobal(VoiceCraftClient client) =>
+        _control.Writer.TryWrite(BuildJson(writer =>
+        {
+            writer.WriteString("t", "global");
+            writer.WriteBoolean("talk", GetBool(client, GlobalChannelSystem.TalkProperty, false));
+            writer.WriteBoolean("listen", GetBool(client, GlobalChannelSystem.ListenProperty, true));
+        }));
+
     /// <summary>Ends the session: the send loop flushes, sends the close frame and stops. First caller's status wins.</summary>
     private void RequestClose(WebSocketCloseStatus status, string description)
     {
@@ -460,14 +514,19 @@ public sealed class WebSession : IDisposable
     private static string? GetString(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
-    private static bool TryGetBool(JsonElement element, out bool value)
+    private static bool TryGetBool(JsonElement element, out bool value) => TryGetBool(element, "value", out value);
+
+    private static bool TryGetBool(JsonElement element, string name, out bool value)
     {
         value = false;
-        if (!element.TryGetProperty("value", out var v) || v.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        if (!element.TryGetProperty(name, out var v) || v.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             return false;
         value = v.GetBoolean();
         return true;
     }
+
+    private static bool GetBool(VoiceCraftEntity entity, string key, bool fallback) =>
+        entity.TryGetProperty<bool>(key, out var value) ? value : fallback;
 
     private static bool TryGetFloat(JsonElement element, out float value)
     {

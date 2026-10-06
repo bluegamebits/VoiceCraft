@@ -9,6 +9,7 @@ using VoiceCraft.Core.Locales;
 using VoiceCraft.Network.Audio.Effects;
 using VoiceCraft.Network.Interfaces;
 using VoiceCraft.Network.Servers;
+using VoiceCraft.Network.Systems;
 
 namespace VoiceCraft.Server.Runtime;
 
@@ -25,6 +26,7 @@ public class ServerProperties
     public TcpMcApiServer.McTcpConfig McTcpConfig => _properties.McTcpConfig;
     public bool TelemetryEnabled => _properties.TelemetryEnabled;
     public string TelemetryToken => _properties.TelemetryToken;
+    public ushort GlobalChannelBitmask => _properties.GlobalChannelBitmask;
     public OrderedDictionary<ushort, IAudioEffect> DefaultAudioEffects { get; } = [];
 
     public void Load(RuntimeOptions options)
@@ -254,6 +256,12 @@ public class ServerPropertiesStructure
     public HttpMcApiServer.HttpMcApiConfig McHttpConfig { get; set; } = new();
     public TcpMcApiServer.McTcpConfig McTcpConfig { get; set; } = new();
     public Dictionary<ushort, JsonElement> DefaultAudioEffectsConfig { get; set; } = [];
+
+    /// <summary>
+    /// Talk/listen bit of the global voice channel (see <see cref="GlobalChannelSystem"/>); 0 turns it off.
+    /// Must not overlap the bitmask of any audio effect.
+    /// </summary>
+    public ushort GlobalChannelBitmask { get; set; }
 }
 
 public class RuntimeOptions

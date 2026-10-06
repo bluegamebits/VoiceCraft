@@ -7,8 +7,9 @@
 //
 // Events (CustomEvent, data in e.detail): state {state, reason}, title {text}, description {text},
 // bindingkey {key, linkedName}, linked {name}, bound {name}, speaking {value}, level {rms}, peers {list}, muted {value},
-// deafened {value}, serverMuted {value}, serverDeafened {value}, error {error}.
+// deafened {value}, serverMuted {value}, serverDeafened {value}, global {talk, listen}, error {error}.
 // state is one of: idle, starting, connecting, connected, reconnecting, stopped.
+// global is only sent by servers with the global channel: it confirms what the server applied.
 
 const FRAME = 960; // 20 ms at 48 kHz
 const PCM_RATE = 16000;
@@ -40,6 +41,10 @@ export class VoiceCraftWeb extends EventTarget {
     this.deafened = false;
     this.volume = 1;
     this.sensitivity = 0.04;
+    /** Global channel as confirmed by the server ({talk, listen}), or null if it hasn't confirmed (yet). */
+    this.global = null;
+    this._globalTalk = false;
+    this._globalListen = true;
     this._ws = null;
     this._retry = 0;
     this._stopped = true;
@@ -145,6 +150,7 @@ export class VoiceCraftWeb extends EventTarget {
     this.bindingKey = null;
     this.boundName = null;
     this.peers = [];
+    this.global = null;
     this._setState('stopped', reason);
   }
 
@@ -154,6 +160,16 @@ export class VoiceCraftWeb extends EventTarget {
   setVolume(value) { this.volume = clamp(value, 0, 2); this._send({ t: 'volume', value: this.volume }); }
   /** Voice activation threshold, 0..1 (lower = more sensitive). */
   setSensitivity(value) { this.sensitivity = clamp(value, 0, 1); this._send({ t: 'sensitivity', value: this.sensitivity }); }
+  /**
+   * Global channel: talk to everyone instead of players nearby, and/or stop hearing it. Can be called before
+   * start(); kept across reconnects. The server applies it once the player is linked, then sends 'global'.
+   * @param {{talk?: boolean, listen?: boolean}} choice
+   */
+  setGlobal({ talk, listen } = {}) {
+    if (talk !== undefined) this._globalTalk = !!talk;
+    if (listen !== undefined) this._globalListen = !!listen;
+    this._send({ t: 'global', talk: this._globalTalk, listen: this._globalListen });
+  }
 
   // ── Connection ─────────────────────────────────────────
 
@@ -162,6 +178,7 @@ export class VoiceCraftWeb extends EventTarget {
     this._setState(this._retry > 0 ? 'reconnecting' : 'connecting');
     this.bindingKey = null;
     this.boundName = null;
+    this.global = null;
     const ws = new WebSocket(this.options.url);
     ws.binaryType = 'arraybuffer';
     this._ws = ws;
@@ -173,6 +190,7 @@ export class VoiceCraftWeb extends EventTarget {
       if (this.deafened) this._send({ t: 'deafen', value: true });
       if (this.volume !== 1) this._send({ t: 'volume', value: this.volume });
       if (this.sensitivity !== 0.04) this._send({ t: 'sensitivity', value: this.sensitivity });
+      if (this._globalTalk || !this._globalListen) this._send({ t: 'global', talk: this._globalTalk, listen: this._globalListen });
     };
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') this._onControl(e.data);
@@ -218,6 +236,10 @@ export class VoiceCraftWeb extends EventTarget {
         break;
       case 'speaking': case 'muted': case 'deafened': case 'serverMuted': case 'serverDeafened':
         this._emit(msg.t, { value: !!msg.value });
+        break;
+      case 'global':
+        this.global = { talk: !!msg.talk, listen: !!msg.listen };
+        this._emit('global', this.global);
         break;
     }
   }

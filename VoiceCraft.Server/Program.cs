@@ -50,6 +50,7 @@ public static class Program
         serviceCollection.AddSingleton<EventHandlerSystem>();
         serviceCollection.AddSingleton<AudioEffectSystem>();
         serviceCollection.AddSingleton<VisibilitySystem>();
+        serviceCollection.AddSingleton<GlobalChannelSystem>();
 
         //Commands
         var rootCommand = new RootCommand();

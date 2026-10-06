@@ -50,6 +50,8 @@ public class App(IServiceProvider serviceProvider)
         var eventHandlerSystem = serviceProvider.GetRequiredService<EventHandlerSystem>();
         var visibilitySystem = serviceProvider.GetRequiredService<VisibilitySystem>();
         var audioEffectSystem = serviceProvider.GetRequiredService<AudioEffectSystem>();
+        //After the event handler, so it already listens to an entity when this sets the entity's bitmasks.
+        var globalChannelSystem = serviceProvider.GetRequiredService<GlobalChannelSystem>();
         //Commands
         var rootCommand = serviceProvider.GetRequiredService<RootCommand>();
         //Other
@@ -78,6 +80,17 @@ public class App(IServiceProvider serviceProvider)
             //Setup Audio Effects
             eventHandlerSystem.EnableVisibilityDisplay = properties.VoiceCraftConfig.EnableVisibilityDisplay;
             audioEffectSystem.DefaultAudioEffects = properties.DefaultAudioEffects;
+
+            //Global Channel
+            globalChannelSystem.Bitmask = properties.GlobalChannelBitmask;
+            if (globalChannelSystem.Bitmask != 0)
+            {
+                AnsiConsole.MarkupLine($"[aqua]Global voice channel is on (bitmask {globalChannelSystem.Bitmask}).[/]");
+                foreach (var effect in properties.DefaultAudioEffects)
+                    if ((effect.Key & globalChannelSystem.Bitmask) != 0)
+                        AnsiConsole.MarkupLine(
+                            $"[yellow]The {effect.Value.EffectType} effect (bitmask {effect.Key}) overlaps the global channel, so it applies there too.[/]");
+            }
 
             //Setup Server Configs
             liteNetServer.Config = properties.VoiceCraftConfig;

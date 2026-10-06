@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using LiteNetLib.Utils;
 using VoiceCraft.Core;
@@ -21,6 +22,12 @@ public abstract class VoiceCraftServer(VoiceCraftWorld world) : IDisposable
     public abstract PositioningType PositioningType { get; }
     public abstract uint MaxClients { get; }
     public abstract int ConnectedPeers { get; }
+
+    /// <summary>
+    /// Property keys a client may set on its own entity even when the server does the positioning
+    /// (with client positioning, clients may set any property). Configure before <see cref="Start"/>.
+    /// </summary>
+    public ISet<string> ClientPropertyKeys { get; } = new HashSet<string>();
 
     ~VoiceCraftServer()
     {
@@ -308,14 +315,15 @@ public abstract class VoiceCraftServer(VoiceCraftWorld world) : IDisposable
         networkEntity.Rotation = packet.Value;
     }
     
-    private static void HandleSetPropertyRequestPacket(VcSetPropertyRequestPacket packet, object? data)
+    private void HandleSetPropertyRequestPacket(VcSetPropertyRequestPacket packet, object? data)
     {
         if (data is not VoiceCraftNetPeer
             {
                 Tag: VoiceCraftNetworkEntity networkEntity, ConnectionState: VcConnectionState.Connected
             }) return;
-        if (networkEntity.PositioningType != PositioningType.Client) return;
-        
+        if (networkEntity.PositioningType != PositioningType.Client &&
+            !ClientPropertyKeys.Contains(packet.Key)) return;
+
         networkEntity.SetProperty(packet.Key, packet.Value);
     }
 
