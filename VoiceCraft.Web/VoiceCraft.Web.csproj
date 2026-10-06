@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <IsAotCompatible>true</IsAotCompatible>
+        <AssemblyName>VoiceCraft.Web</AssemblyName>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(_IsPublishing)' == 'yes'">
+        <UseSharedCompilation>false</UseSharedCompilation>
+        <PublishSingleFile>true</PublishSingleFile>
+        <PublishTrimmed>true</PublishTrimmed>
+        <SelfContained>true</SelfContained>
+        <TrimMode>link</TrimMode>
+        <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\VoiceCraft.Core\VoiceCraft.Core.csproj"/>
+        <ProjectReference Include="..\VoiceCraft.Network\VoiceCraft.Network.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="OpusSharp"/>
+        <PackageReference Include="System.CommandLine"/>
+    </ItemGroup>
+
+    <!-- The browser client is embedded so the single-file build can serve it. -->
+    <ItemGroup>
+        <EmbeddedResource Include="wwwroot\**\*" LogicalName="wwwroot/%(RecursiveDir)%(Filename)%(Extension)"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="VoiceCraft.Tests"/>
+    </ItemGroup>
+</Project>

@@ -25,5 +25,6 @@
     <ProjectReference Include="..\VoiceCraft.Network\VoiceCraft.Network.csproj" />
     <ProjectReference Include="..\VoiceCraft.Server\VoiceCraft.Server.csproj" />
     <ProjectReference Include="..\VoiceCraft.Server.Runtime\VoiceCraft.Server.Runtime.csproj" />
+    <ProjectReference Include="..\VoiceCraft.Web\VoiceCraft.Web.csproj" />
   </ItemGroup>
 </Project>
