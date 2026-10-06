@@ -70,10 +70,19 @@ vc.addEventListener('state', (e) => showState(e.detail.state, e.detail.reason));
 button.onclick = () => vc.start(); // from a click: browsers need a gesture for the mic and audio
 ```
 
-Events: `state`, `bindingkey`, `bound`, `description`, `title`, `speaking`, `level`, `peers`,
-`muted`, `deafened`, `serverMuted`, `serverDeafened`, `error`. Methods: `start()`, `stop()`,
-`setMuted()`, `setDeafened()`, `setVolume(0..2)`, `setSensitivity(0..1)`. `vc.stats` has frame
-counters for diagnostics. For testing without a microphone, the example page takes `?tone=1`
+Events: `state`, `bindingkey`, `linked`, `bound`, `description`, `title`, `speaking`, `level`,
+`peers`, `muted`, `deafened`, `serverMuted`, `serverDeafened`, `error`. Methods: `start()`, `stop()`,
+`setMuted()`, `setDeafened()`, `setVolume(0..2)`, `setSensitivity(0..1)`, and the static
+`VoiceCraftWeb.forgetDevice()`. `vc.stats` has frame counters for diagnostics.
+
+### Remembered devices
+
+The page keeps a random `ServerUserGuid` per browser in `localStorage`. VoiceCraft sends that id
+only to the server and the Minecraft add-on, never to other clients, so an add-on can use it to
+remember a device after its first `/vcbind` and bind it automatically afterwards. When an add-on
+does, it describes a known-but-waiting device as `Linked to player <name>. Waiting for them to join.
+Your binding key is <key>`; the library reports that as `linked {name}` and
+`bindingkey {key, linkedName}`. `forgetDevice()` drops the ids, so the next connection is a new device. For testing without a microphone, the example page takes `?tone=1`
 (sends a 440 Hz tone) and `?codec=pcm16` (forces the fallback).
 
 ## WebSocket protocol

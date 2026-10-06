@@ -6,7 +6,7 @@
 //   button.onclick = () => vc.start(); // must run from a user gesture (microphone + audio)
 //
 // Events (CustomEvent, data in e.detail): state {state, reason}, title {text}, description {text},
-// bindingkey {key}, bound {name}, speaking {value}, level {rms}, peers {list}, muted {value},
+// bindingkey {key, linkedName}, linked {name}, bound {name}, speaking {value}, level {rms}, peers {list}, muted {value},
 // deafened {value}, serverMuted {value}, serverDeafened {value}, error {error}.
 // state is one of: idle, starting, connecting, connected, reconnecting, stopped.
 
@@ -17,6 +17,8 @@ const ID_KEY = 'voicecraft-web-ids';
 
 const BINDING_KEY = /binding key is\s+([0-9A-Za-z]{5})/i;
 const BOUND_TO = /^Bound to player\s+(.+)$/i;
+// Sent by add-ons that remember devices: this device is linked, waiting for the player to join.
+const LINKED_TO = /^Linked to player\s+(.+?)\.\s/i;
 
 export class VoiceCraftWeb extends EventTarget {
   /**
@@ -44,6 +46,14 @@ export class VoiceCraftWeb extends EventTarget {
     this._timestamp = 0;
     /** Diagnostics: frames sent/received and the level of the last played frame. */
     this.stats = { sent: 0, received: 0, playedRms: 0 };
+  }
+
+  /**
+   * Forgets this browser's ids, so the server no longer recognizes it as a linked device
+   * (the next connection needs /vcbind again). Takes effect on the next connection.
+   */
+  static forgetDevice() {
+    try { localStorage.removeItem(ID_KEY); } catch { /* storage unavailable */ }
   }
 
   /** Opus via WebCodecs if the browser can encode and decode it, else 16 kHz PCM. */
@@ -191,8 +201,10 @@ export class VoiceCraftWeb extends EventTarget {
         break;
       case 'description': {
         this._emit('description', { text: msg.text });
+        const linked = LINKED_TO.exec(msg.text || '');
+        if (linked) { this.linkedName = linked[1]; this._emit('linked', { name: linked[1] }); }
         const key = BINDING_KEY.exec(msg.text || '');
-        if (key) { this.bindingKey = key[1]; this.boundName = null; this._emit('bindingkey', { key: key[1] }); }
+        if (key) { this.bindingKey = key[1]; this.boundName = null; this._emit('bindingkey', { key: key[1], linkedName: linked ? linked[1] : null }); }
         const bound = BOUND_TO.exec(msg.text || '');
         if (bound) { this.boundName = bound[1]; this.bindingKey = null; this._emit('bound', { name: bound[1] }); }
         break;

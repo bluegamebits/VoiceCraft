@@ -81,7 +81,10 @@
   });
   vc.addEventListener('bindingkey', (e) => {
     $('command').textContent = `/vcbind ${e.detail.key}`;
-    $('bind').hidden = false; $('live').hidden = false; $('bound').textContent = 'Not linked to a player yet.';
+    $('bind').hidden = false; $('live').hidden = false;
+    $('bound').textContent = e.detail.linkedName
+      ? `This device is linked to ${e.detail.linkedName}: it connects by itself when they join.`
+      : 'Not linked to a player yet.';
   });
   vc.addEventListener('bound', (e) => {
     $('bind').hidden = true; $('live').hidden = false; $('bound').textContent = `Linked to ${e.detail.name}.`;
