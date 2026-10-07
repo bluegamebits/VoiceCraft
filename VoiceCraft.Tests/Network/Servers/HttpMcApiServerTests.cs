@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -101,6 +102,47 @@ public class HttpMcApiServerTests
 
         Assert.Empty(server.Peers);
         Assert.Equal(0, server.ConnectedPeers);
+    }
+
+    [Fact]
+    public async Task Connect_WhenClientSlotsAreTaken_LogsWhyItFailed()
+    {
+        using var world = new VoiceCraftWorld();
+        using var effects = new AudioEffectSystem();
+        using var server = CreateServer(world, effects, out var baseAddress);
+        using var client = new HttpClient();
+        server.Config.MaxClients = 1;
+        server.Start();
+        using var first = await ConnectAsync(client, baseAddress, server);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        var output = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(output);
+        try
+        {
+            using var second = await ConnectAsync(client, baseAddress, server);
+            Assert.Equal(HttpStatusCode.InternalServerError, second.StatusCode);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        Assert.Contains("[McHttp] /connect failed with HTTP 500", output.ToString());
+        Assert.Contains("1 of 1 McApi client slots are still taken", output.ToString());
+    }
+
+    private static async Task<HttpResponseMessage> ConnectAsync(HttpClient client, Uri baseAddress,
+        HttpMcApiServer server)
+    {
+        var login = new McApiLoginRequestPacket();
+        login.Set("request-1", "login-token", McApiServer.Version, []);
+        var responseTask = client.PostAsync(
+            new Uri(baseAddress, "connect"),
+            new StringContent(Pack(login), Encoding.UTF8, "text/plain"));
+        await PumpUntilCompletedAsync(responseTask, server.Update);
+        return await responseTask;
     }
 
     private static HttpMcApiServer CreateServer(

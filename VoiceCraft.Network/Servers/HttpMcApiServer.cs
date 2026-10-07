@@ -332,8 +332,9 @@ public class HttpMcApiServer(VoiceCraftWorld world, AudioEffectSystem audioEffec
             packets.Clear();
             SendPacketsLogic(context, netPeer, packets);
         }
-        catch
+        catch (Exception ex)
         {
+            Console.WriteLine($"[McHttp] {context.Request.Url?.AbsolutePath} failed with HTTP 500: {ex}");
             try
             {
                 context.Response.StatusCode = 500;
@@ -356,7 +357,8 @@ public class HttpMcApiServer(VoiceCraftWorld world, AudioEffectSystem audioEffec
         netPeer.SetLookupToken(tempToken);
         if (!TryAddHttpPeer(tempToken, netPeer))
         {
-            throw new Exception(); //Failure
+            throw new InvalidOperationException(
+                $"Connect rejected: {Peers.Count} of {Config.MaxClients} McApi client slots are still taken."); //Failure
         }
 
         ReceivePacketsLogic(netPeer, packets, netPeer.SessionToken);
@@ -380,7 +382,7 @@ public class HttpMcApiServer(VoiceCraftWorld world, AudioEffectSystem audioEffec
         //Swap to new session token.
         else if (!TryRemoveHttpPeer(tempToken, out _) || !TryAddHttpPeer(netPeer.SessionToken, netPeer))
         {
-            throw new Exception(); //Failure
+            throw new InvalidOperationException("Connect failed: could not store the peer under its session token."); //Failure
         }
         else
         {
